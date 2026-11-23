@@ -1,7 +1,7 @@
 // This host's Tern talk service. omp sessions start it on demand; it exits once none have listened for a while.
 // It binds only the Tailscale address and accepts only this tailnet user's own untagged machines.
 import { decode, enqueue, lifetime, livePeers, peerAddresses, peerByKey, peersByName, visiblePanes } from "./mail.ts";
-import { port, tailnet, trusted, type Node } from "./net.ts";
+import { port, tailnet, trusted, version, type Node } from "./net.ts";
 
 const idleExitMs = 2 * 60_000;
 const maxBody = 64 * 1024;
@@ -55,7 +55,7 @@ const server = Bun.serve({
 		const peer = await caller(srv.requestIP(request)?.address).catch(() => undefined);
 		if (!peer) return fail(403, "Only your own machines on this tailnet may use Tern talk.");
 		const { pathname } = new URL(request.url);
-		if (request.method === "GET" && pathname === "/v1/health") return Response.json({ name: self.name, v: 2 });
+		if (request.method === "GET" && pathname === "/v1/health") return Response.json({ name: self.name, v: 2, version, pid: process.pid });
 		if (request.method === "GET" && pathname === "/v1/aliases") {
 			const panes = await visiblePanes().catch(() => undefined);
 			return Response.json(peerAddresses(await livePeers(), panes).map(({ address, label }) => ({ address, label })));

@@ -6,8 +6,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { alias, encode, refreshing, type Message } from "./mail.ts";
+import packageJson from "./package.json" with { type: "json" };
 
 export const port = Number(process.env.TERN_TALK_PORT) || 7470;
+export const { version } = packageJson;
 
 export type Node = { name: string; ip: string; user: number; tagged: boolean; online: boolean; os: string };
 export type Tailnet = { self: Node; peers: Node[] };
@@ -98,12 +100,24 @@ function bunBinary(): string {
 	return Bun.which("bun") ?? (existsSync(home) ? home : "bun");
 }
 
-// Starts this host's service unless it already answers. A second concurrent start loses the port and exits.
+function newer(a: string, b: string): boolean {
+	const [x, y] = [a, b].map(version => version.split(".").map(Number));
+	for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0);
+	return false;
+}
+
+// Starts this host's service unless it already answers, replacing one from an older install.
+// A second concurrent start loses the port and exits.
 export async function ensureService(): Promise<void> {
 	const { self } = await tailnet();
 	try {
 		const response = await fetch(`http://${self.ip}:${port}/v1/health`, { signal: AbortSignal.timeout(800) });
-		if (response.ok) return;
+		if (response.ok) {
+			const running = await response.json() as { version?: string; pid?: number };
+			if (!running.version || !running.pid || !newer(version, running.version)) return;
+			process.kill(running.pid);
+			await Bun.sleep(300);
+		}
 	} catch { /* Not running. */ }
 	const child = spawn(bunBinary(), [fileURLToPath(new URL("./daemon.ts", import.meta.url))], {
 		detached: true, stdio: "ignore", windowsHide: true, env: process.env,

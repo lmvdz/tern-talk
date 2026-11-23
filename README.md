@@ -4,11 +4,34 @@ Send a prompt to another [omp](https://github.com/can1357/oh-my-pi) session in T
 
 ## Install
 
-The `v0.1.0` rollout targets omp 19.1.1 and Tern 0.9.13. Authenticate Git on each machine with access to this private repository. For GitHub CLI users, `gh auth login` followed by `gh auth setup-git` configures HTTPS Git access.
+The `v0.1.1` rollout targets omp 19.1.1 and Tern 0.9.13. Sign in with `gh auth login` on each machine using an account with access to this private repository. Download the pinned release with `gh`, then link the extracted package into omp. Bun's `github:` installer requests the GitHub tarball without the Git credential helper and cannot install this private repo directly.
+
+**Linux / macOS**
 
 ```sh
-omp install 'github:lmvdz/tern-talk#v0.1.0'
+tag=v0.1.1
+dest="$HOME/.omp/tern-talk-releases/$tag"
+mkdir -p "$dest"
+gh release download "$tag" --repo lmvdz/tern-talk --archive=tar.gz --output "$dest/source.tar.gz"
+tar -xzf "$dest/source.tar.gz" --strip-components=1 -C "$dest"
+rm "$dest/source.tar.gz"
+omp install "$dest"
 ```
+
+**Windows (PowerShell)**
+
+```powershell
+$tag = 'v0.1.1'
+$dest = Join-Path $HOME ".omp\tern-talk-releases\$tag"
+New-Item -ItemType Directory -Force $dest | Out-Null
+$archive = Join-Path $dest 'source.zip'
+gh release download $tag --repo lmvdz/tern-talk --archive=zip --output $archive
+tar.exe -xf $archive --strip-components=1 -C $dest
+Remove-Item -LiteralPath $archive
+omp install $dest
+```
+
+Keep the extracted version directory: omp links to it rather than copying it.
 
 If migrating from a loose `tern-talk` extension in your omp agent's `extensions/` directory, move the old copy outside that directory before restarting omp. In each new omp session inside Tern, type `@` in an empty composer and select a block. No relay or separate opt-in is needed for same-machine messaging.
 

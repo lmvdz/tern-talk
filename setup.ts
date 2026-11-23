@@ -105,6 +105,25 @@ async function installLocal(): Promise<Result> {
 	return result;
 }
 
+// First contact: when the host refuses every key, ask for its password once and install this machine's key.
+async function authorize(target: string): Promise<void> {
+	if ((await ssh(target, ["exit"])).code !== 255 || !process.stdin.isTTY) return;
+	const identity = sshOptions.includes("-i") ? [`${sshOptions[sshOptions.indexOf("-i") + 1].replace(/^~/, homedir())}.pub`] : [];
+	let key = "";
+	for (const path of [...identity, join(homedir(), ".ssh", "id_ed25519.pub"), join(homedir(), ".ssh", "id_rsa.pub")]) {
+		if (await Bun.file(path).exists()) { key = (await Bun.file(path).text()).trim(); break; }
+	}
+	if (!key) {
+		const generated = join(homedir(), ".ssh", "id_ed25519");
+		await exec(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", generated]);
+		key = (await Bun.file(`${generated}.pub`).text()).trim();
+	}
+	console.log(`[${target}] no SSH key accepted; enter its password once to install this machine's key`);
+	// ssh reads the password from the terminal; stdin carries the key.
+	await Bun.spawn(["ssh", "-o", "StrictHostKeyChecking=accept-new", target, "umask 077; mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"],
+		{ stdin: new TextEncoder().encode(`${key}\n`), stdout: "inherit", stderr: "inherit" }).exited;
+}
+
 async function installRemote(target: string): Promise<Result> {
 	const host = target.replace(/^[^@]*@/, "");
 	const result: Result = { host, target, ok: false, notes: [] };
@@ -175,6 +194,7 @@ try {
 	const self = await tailnet(true).catch(error => { throw new Error(`Tailscale must be running here: ${error.message}`); });
 	console.log(`Tern Talk ${version}: setting up ${self.self.name}${targets.length ? ` and ${targets.join(", ")}` : ""}`);
 	results.push(await installLocal());
+	for (const target of targets) await authorize(target);
 	results.push(...await Promise.all(targets.map(installRemote)));
 	for (const result of results) {
 		if (!result.notes.some(note => note.startsWith("Tern is not installed")) || result.target === "local" || !Bun.which("tern")) continue;

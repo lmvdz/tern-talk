@@ -1,0 +1,11 @@
+{
+  "name": "tern-talk",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "description": "Address omp sessions by name in Tern and exchange correlated replies.",
+  "repository": "github:lmvdz/tern-talk",
+  "omp": {
+    "extensions": ["./index.ts"]
+  }
+}

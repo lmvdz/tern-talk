@@ -4,6 +4,7 @@
 // Each host gets bun and omp when missing, this exact package (pushed over SSH, no GitHub login needed),
 // `omp install`, and a Windows firewall rule for the Tailscale range. Then every host is checked end to end.
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -108,15 +109,21 @@ async function installLocal(): Promise<Result> {
 // First contact: when the host refuses every key, ask for its password once and install this machine's key.
 async function authorize(target: string): Promise<void> {
 	if ((await ssh(target, ["exit"])).code !== 255 || !process.stdin.isTTY) return;
-	const identity = sshOptions.includes("-i") ? [`${sshOptions[sshOptions.indexOf("-i") + 1].replace(/^~/, homedir())}.pub`] : [];
-	let key = "";
-	for (const path of [...identity, join(homedir(), ".ssh", "id_ed25519.pub"), join(homedir(), ".ssh", "id_rsa.pub")]) {
-		if (await Bun.file(path).exists()) { key = (await Bun.file(path).text()).trim(); break; }
+	// Install the key ssh will offer: the -i file if given, else a default key, which is then passed with -i too.
+	let identity = sshOptions.includes("-i") ? sshOptions[sshOptions.indexOf("-i") + 1].replace(/^~/, homedir()) : undefined;
+	if (!identity) {
+		identity = [join(homedir(), ".ssh", "id_ed25519"), join(homedir(), ".ssh", "id_rsa")].find(path => existsSync(path));
+		if (!identity) {
+			identity = join(homedir(), ".ssh", "id_ed25519");
+			await exec(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", identity]);
+		}
+		sshOptions.push("-i", identity);
 	}
+	const derived = await exec(["ssh-keygen", "-y", "-f", identity]);
+	const key = derived.code === 0 ? derived.out.trim().split(/\r?\n/).find(line => line.startsWith("ssh-") || line.startsWith("ecdsa-")) : undefined;
 	if (!key) {
-		const generated = join(homedir(), ".ssh", "id_ed25519");
-		await exec(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", generated]);
-		key = (await Bun.file(`${generated}.pub`).text()).trim();
+		console.log(`[${target}] cannot read a public key from ${identity}: ${derived.out.trim()}`);
+		return;
 	}
 	const password = await readSecret(`[${target}] no SSH key accepted. Password for ${target} (asked once, to install this machine's key): `);
 	// Hand the password to ssh through SSH_ASKPASS; Windows ssh does not always get a console from a child process.

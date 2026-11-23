@@ -2,8 +2,13 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { Loader } from "@oh-my-pi/pi-tui";
 import { randomUUID } from "node:crypto";
 import { addressCompletion } from "./completion.ts";
-import { alias, drain, enqueue, id, lifetime, livePeers, paneAlias, peerByKey, peerName, peersByName, register, unregister, visiblePanes, type Delivery, type Message, type Peer } from "./mail.ts";
+import { readFileSync } from "node:fs";
+import { alias, drain, enqueue, id, lifetime, livePeers, paneAlias, peerByKey, peerName, peersByName, register, run, tern, unregister, visiblePanes, type Delivery, type Message, type Peer } from "./mail.ts";
 import { ensureService, remoteHosts, remoteSend } from "./net.ts";
+
+// Read at evaluation, so a reload of this module sees the version it loaded.
+const packageFile = new URL("./package.json", import.meta.url);
+const { version: loadedVersion }: { version: string } = JSON.parse(readFileSync(packageFile, "utf8"));
 
 const phrase = /^talk\s+with\s+@/i;
 const address = /^@([a-z0-9][a-z0-9_.-]{0,63})(?:\/([a-z0-9][a-z0-9_.-]{0,63}))?\s+([\s\S]+)$/i;
@@ -166,6 +171,19 @@ export default function (pi: ExtensionAPI) {
 		await unregister(current.peer);
 	}
 
+	// After setup installs a new version, an idle block with an empty composer reloads its extensions.
+	// Only command handlers can reload, so the block types the command into its own pane.
+	let upgradeRequested: string | undefined;
+	async function upgradeWhenIdle(ctx: ExtensionContext) {
+		let onDisk: unknown;
+		try { onDisk = JSON.parse(await Bun.file(packageFile).text()).version; }
+		catch { return; /* Mid-install. */ }
+		if (typeof onDisk !== "string" || onDisk === loadedVersion || onDisk === upgradeRequested) return;
+		if (activeRequest || usingReply || pending.size || inbox.size || !ctx.isIdle() || ctx.hasPendingMessages() || ctx.ui.getEditorText() !== "") return;
+		upgradeRequested = onDisk;
+		await run(tern, ["run", paneId, "/tern-talk reload"]);
+	}
+
 	async function listen(ctx: ExtensionContext) {
 		if (!enabled || listening) return;
 		const panes = await visiblePanes().catch(() => undefined);
@@ -173,6 +191,7 @@ export default function (pi: ExtensionAPI) {
 		const peer = await register(name, paneId, customName ? undefined : true);
 		let nextPeerCheck = 0;
 		let nextServiceCheck = 0;
+		let nextUpgradeCheck = Date.now() + 15_000;
 		const current: Listener = { peer, busy: false, timer: ctx.setInterval(async () => {
 			if (listening !== current || current.busy) return;
 			current.busy = true;
@@ -182,6 +201,10 @@ export default function (pi: ExtensionAPI) {
 				if (now >= nextServiceCheck) {
 					nextServiceCheck = now + 60_000;
 					void ensureService().catch(() => { /* Tailscale is down; local talk still works. */ });
+				}
+				if (now >= nextUpgradeCheck) {
+					nextUpgradeCheck = now + 15_000;
+					await upgradeWhenIdle(ctx);
 				}
 				if (pending.size && now >= nextPeerCheck) {
 					nextPeerCheck = now + 3_000;
@@ -374,6 +397,11 @@ export default function (pi: ExtensionAPI) {
 						await listen(ctx);
 						ctx.ui.notify("Tern talk is listening under this block’s automatic address.", "info");
 						break;
+					case "reload":
+						// Typed by upgradeWhenIdle; also usable by hand after an install.
+						await stop(ctx);
+						await ctx.reload();
+						return;
 					case "stop":
 						enabled = false;
 						await stop(ctx);

@@ -18,7 +18,7 @@ This sets up this machine and every listed host over SSH, then checks that they 
 - if Tern is missing, runs `tern remote setup` from this machine to install it;
 - on Windows, adds an inbound firewall rule for TCP 7470 from `100.64.0.0/10`, when the SSH user is an admin.
 
-When it finishes it prints one `ok`/`FAIL` line per host. Target hosts need an SSH server: Linux has one; on macOS turn on **System Settings › General › Sharing › Remote Login**; on Windows enable OpenSSH Server. Run it again to upgrade every host. Restart omp sessions afterwards so they load the new version.
+When it finishes it prints one `ok`/`FAIL` line per host. Target hosts need an SSH server: Linux has one; on macOS turn on **System Settings › General › Sharing › Remote Login**; on Windows enable OpenSSH Server. The first time a host refuses every key, setup asks for its password once and installs this machine's key. Run setup again to upgrade every host: it installs to `~/.omp/tern-talk-current`, and each running omp session reloads itself within 15 seconds once it is idle with an empty composer (`/tern-talk reload` does it by hand).
 
 ## Use
 

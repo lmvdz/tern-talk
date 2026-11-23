@@ -55,12 +55,14 @@ const unixInstall = (archive: string) => `set -e
 export PATH="$HOME/.bun/bin:$HOME/.local/bin:/usr/local/bin:$PATH"
 if ! command -v bun >/dev/null 2>&1; then echo "installing bun"; curl -fsSL https://bun.sh/install | bash >/dev/null; fi
 if ! command -v omp >/dev/null 2>&1; then echo "installing omp"; curl -fsSL https://omp.sh/install | sh; fi
-dest="$HOME/.omp/tern-talk-releases/${version}"
+# One fixed path: running omp sessions reload from it when the version changes.
+dest="$HOME/.omp/tern-talk-current"
 rm -rf "$dest"; mkdir -p "$dest"
 tar -xzf "${archive}" -C "$dest"; rm -f "${archive}"
 omp install "$dest"
+rm -rf "$HOME/.omp/tern-talk-releases"
 # Replace a running service from an earlier install; omp sessions start the new one.
-pkill -f 'tern-talk-releases/.*/daemon.ts' 2>/dev/null || true
+pkill -f 'tern-talk-[a-z]+/.*daemon.ts' 2>/dev/null || true
 if command -v tern >/dev/null 2>&1; then echo "tern: $(tern --version)"
 elif [ -x /Applications/Tern.app/Contents/MacOS/tern ]; then echo "tern: $(/Applications/Tern.app/Contents/MacOS/tern --version)"
 else echo "TERN_MISSING"; fi
@@ -72,14 +74,15 @@ $ProgressPreference = 'SilentlyContinue'
 $env:Path = "$HOME\\.bun\\bin;$HOME\\.local\\bin;" + $env:Path
 if (-not (Get-Command bun -ErrorAction SilentlyContinue)) { 'installing bun'; irm https://bun.sh/install.ps1 | iex | Out-Null; $env:Path = "$HOME\\.bun\\bin;" + $env:Path }
 if (-not (Get-Command omp -ErrorAction SilentlyContinue)) { 'installing omp'; irm https://omp.sh/install.ps1 | iex }
-$dest = Join-Path $HOME '.omp\\tern-talk-releases\\${version}'
+$dest = Join-Path $HOME '.omp\\tern-talk-current'
 if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
 New-Item -ItemType Directory -Force $dest | Out-Null
 tar.exe -xzf '${archive}' -C $dest
 Remove-Item -Force '${archive}'
 omp install $dest
 if ($LASTEXITCODE) { throw "omp install failed" }
-Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*tern-talk-releases*daemon.ts*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*tern-talk-*daemon.ts*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+Remove-Item -Recurse -Force (Join-Path $HOME '.omp\\tern-talk-releases') -ErrorAction SilentlyContinue
 if (Get-Command tern -ErrorAction SilentlyContinue) { "tern: $(tern --version)" } else { 'TERN_MISSING' }
 if (-not (Get-Command tailscale -ErrorAction SilentlyContinue)) { 'TAILSCALE_MISSING' }
 if (-not (Get-NetFirewallRule -DisplayName 'Tern Talk' -ErrorAction SilentlyContinue)) {
@@ -194,13 +197,13 @@ async function installRemote(target: string): Promise<Result> {
 async function verify(result: Result, controller: string) {
 	if (!result.ok) return;
 	if (result.target === "local") {
-		spawn(process.execPath, [join(homedir(), ".omp", "tern-talk-releases", version, "daemon.ts")], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+		spawn(process.execPath, [join(homedir(), ".omp", "tern-talk-current", "daemon.ts")], { detached: true, stdio: "ignore", windowsHide: true }).unref();
 	} else if (result.os === "windows") {
 		// A plain child would die with the SSH session's job object; WMI starts it outside.
 		await ssh(result.target, ["powershell", "-NoProfile", "-EncodedCommand",
-			encoded(`$d = Join-Path $HOME '.omp\\tern-talk-releases\\${version}\\daemon.ts'; $b = (Get-Command bun -ErrorAction SilentlyContinue).Source; if (-not $b) { $b = "$HOME\\.bun\\bin\\bun.exe" }; Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "\`"$b\`" \`"$d\`"" } | Out-Null`)]);
+			encoded(`$d = Join-Path $HOME '.omp\\tern-talk-current\\daemon.ts'; $b = (Get-Command bun -ErrorAction SilentlyContinue).Source; if (-not $b) { $b = "$HOME\\.bun\\bin\\bun.exe" }; Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "\`"$b\`" \`"$d\`"" } | Out-Null`)]);
 	} else {
-		await ssh(result.target, ["sh", "-l", "-c", `'export PATH="$HOME/.bun/bin:$PATH"; nohup bun "$HOME/.omp/tern-talk-releases/${version}/daemon.ts" >/dev/null 2>&1 &'`]);
+		await ssh(result.target, ["sh", "-l", "-c", `'export PATH="$HOME/.bun/bin:$PATH"; nohup bun "$HOME/.omp/tern-talk-current/daemon.ts" >/dev/null 2>&1 &'`]);
 	}
 	await Bun.sleep(2500);
 	const net = await tailnet(true);

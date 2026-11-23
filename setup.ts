@@ -118,11 +118,41 @@ async function authorize(target: string): Promise<void> {
 		await exec(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", generated]);
 		key = (await Bun.file(`${generated}.pub`).text()).trim();
 	}
-	console.log(`[${target}] no SSH key accepted; enter its password once to install this machine's key`);
-	// Windows ssh only prompts with the console as stdin, so the public key travels in the command.
-	const code = await Bun.spawn(["ssh", "-o", "StrictHostKeyChecking=accept-new", target, `umask 077; mkdir -p ~/.ssh && echo '${key.replace(/'/g, "")}' >> ~/.ssh/authorized_keys`],
-		{ stdin: "inherit", stdout: "inherit", stderr: "inherit" }).exited;
-	if (code) console.log(`[${target}] key install failed (ssh exit ${code})`);
+	const password = await readSecret(`[${target}] no SSH key accepted. Password for ${target} (asked once, to install this machine's key): `);
+	// Hand the password to ssh through SSH_ASKPASS; Windows ssh does not always get a console from a child process.
+	const askpass = join(staging, process.platform === "win32" ? "askpass.cmd" : "askpass.sh");
+	const reader = join(staging, "askpass.ts");
+	await Bun.write(reader, "process.stdout.write(`${process.env.TERN_TALK_SSH_PASSWORD}\\n`);\n");
+	await Bun.write(askpass, process.platform === "win32" ? `@"${process.execPath}" "${reader}"\r\n` : `#!/bin/sh\nexec "${process.execPath}" "${reader}"\n`);
+	if (process.platform !== "win32") await exec(["chmod", "700", askpass]);
+	const child = Bun.spawn(["ssh", "-o", "StrictHostKeyChecking=accept-new", "-o", "NumberOfPasswordPrompts=1", target,
+		`umask 077; mkdir -p ~/.ssh && echo '${key.replace(/'/g, "")}' >> ~/.ssh/authorized_keys`], {
+		stdin: "ignore", stdout: "pipe", stderr: "pipe",
+		env: { ...process.env, SSH_ASKPASS: askpass, SSH_ASKPASS_REQUIRE: "force", DISPLAY: process.env.DISPLAY ?? ":0", TERN_TALK_SSH_PASSWORD: password },
+	});
+	const [error, code] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+	console.log(code ? `[${target}] key install failed: ${error.trim().split("\n").at(-1)}` : `[${target}] key installed`);
+}
+
+async function readSecret(prompt: string): Promise<string> {
+	process.stdout.write(prompt);
+	process.stdin.setRawMode(true);
+	process.stdin.resume();
+	let secret = "";
+	try {
+		for await (const chunk of process.stdin) {
+			for (const char of String(chunk)) {
+				if (char === "\r" || char === "\n") return secret;
+				if (char === "\x03") process.exit(130);
+				secret = char === "\x7f" || char === "\b" ? secret.slice(0, -1) : secret + char;
+			}
+		}
+		return secret;
+	} finally {
+		process.stdin.setRawMode(false);
+		process.stdin.pause();
+		process.stdout.write("\n");
+	}
 }
 
 async function installRemote(target: string): Promise<Result> {

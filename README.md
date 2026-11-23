@@ -29,7 +29,7 @@ In an omp session inside Tern, type `@` in an empty composer and pick a block. O
 @ip-172-31-19-172/ZKAPI Review the API error handling; then here: fix anything the review finds
 ```
 
-The `; then here:` clause runs only in the sender after a reply. Agents can hand work off with `tern_send` and resume from a correlated reply. Every omp session in Tern listens automatically under its tab or block name; `/tern-talk listen NAME` sets an explicit address and `/tern-talk stop` pauses it. Requests from another machine show a card; `/tern-talk accept ID` runs it as a prompt and `/tern-talk reply ID TEXT` answers without running the agent. Requests from other machines never run on their own.
+The `; then here:` clause runs only in the sender after a reply. Agents can hand work off with `tern_send` and resume from a correlated reply. Every omp session in Tern listens automatically under its tab or block name; `/tern-talk listen NAME` sets an explicit address and `/tern-talk stop` pauses it. Requests from this machine and from your other machines run automatically when the recipient is idle, under its usual tool approvals, and the final answer goes back to the sender. `/tern-talk reply ID TEXT` answers by hand instead.
 
 ## How cross-host delivery works
 

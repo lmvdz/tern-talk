@@ -4,38 +4,38 @@ Send a prompt to another [omp](https://github.com/can1357/oh-my-pi) session in T
 
 ## Install
 
-Tern Talk v0.1.1 targets omp 19.1.1 and Tern 0.9.13. Install the pinned release on Linux, macOS, or Windows. No GitHub sign-in is required.
+Tern Talk v0.2.0 targets omp 19.1.1 and Tern 0.9.13. Each machine needs [Tailscale](https://tailscale.com) on your tailnet and Tern. From any one of them, run:
 
 ```sh
-omp install 'github:lmvdz/tern-talk#v0.1.1'
+git clone https://github.com/lmvdz/tern-talk && cd tern-talk
+bun setup.ts [-i IDENTITY_FILE] [user@]host ...
 ```
 
-If migrating from a loose `tern-talk` extension in your omp agent's `extensions/` directory, move the old copy outside that directory before restarting omp. In each new omp session inside Tern, type `@` in an empty composer and select a block. No relay or separate opt-in is needed for same-machine messaging.
+This sets up this machine and every listed host over SSH, then checks that they can all reach each other. On each host it:
+
+- installs bun and omp if they are missing;
+- copies this package to `~/.omp/tern-talk-releases/<version>` and runs `omp install` on it (the other machines need no GitHub login);
+- if Tern is missing, runs `tern remote setup` from this machine to install it;
+- on Windows, adds an inbound firewall rule for TCP 7470 from `100.64.0.0/10`, when the SSH user is an admin.
+
+When it finishes it prints one `ok`/`FAIL` line per host. Target hosts need an SSH server: Linux has one; on macOS turn on **System Settings › General › Sharing › Remote Login**; on Windows enable OpenSSH Server. Run it again to upgrade every host. Restart omp sessions afterwards so they load the new version.
+
+## Use
+
+In an omp session inside Tern, type `@` in an empty composer and pick a block. Other machines appear as `@host/`; pick one to see its blocks.
 
 ```text
 @ZKAPI Review the API error handling
-@ZKAPI Review the API error handling; then here: fix anything the review finds
+@ip-172-31-19-172/ZKAPI Review the API error handling; then here: fix anything the review finds
 ```
 
-The `; then here:` clause runs only in the sender after a reply. Agents can hand work off with `tern_send` and resume from a correlated reply. `/tern-talk listen NAME` sets an explicit address for the current omp session; `/tern-talk stop` pauses its listener. Only listening omp sessions can receive a Tern Talk request. Other detected agents may appear in the picker but are not addressable.
+The `; then here:` clause runs only in the sender after a reply. Agents can hand work off with `tern_send` and resume from a correlated reply. Every omp session in Tern listens automatically under its tab or block name; `/tern-talk listen NAME` sets an explicit address and `/tern-talk stop` pauses it. Requests from another machine show a card; `/tern-talk accept ID` runs it as a prompt and `/tern-talk reply ID TEXT` answers without running the agent. Requests from other machines never run on their own.
 
-## Enable cross-host messaging
+## How cross-host delivery works
 
-1. Install the same Tern Talk tag on each machine. Have `tern`, `tern-link`, and `bun` on `PATH`, and enroll both `tern-link` ports with the same switchboard. `tern-link ls` should show the expected host names. Tern Talk does not provision the switchboard.
-2. On each host, append one rule per trusted peer to the port's existing `policy.toml`. The directory is `TERN_LINK_HOME` if set, otherwise `~/.tern-link` on Linux/macOS and `%LOCALAPPDATA%\tern-link` on Windows. Use the same `TERN_LINK_HOME` in the port and in Tern/omp if overriding it.
+The first omp session on a machine starts `daemon.ts`, a small HTTP service bound only to that machine's Tailscale IPv4 address on port 7470 (`TERN_TALK_PORT` overrides it). It exits two minutes after the last omp session stops listening. The sending machine's name comes from Tailscale: the service maps the WireGuard source address to a tailnet node. It accepts only nodes that belong to the same Tailscale user and are untagged, so there is no separate allowlist. A request to an unknown or stopped alias fails immediately. Messages are limited to 60 KiB.
 
-   ```toml
-   [[allow]]
-   origin = "trusted-peer-host"
-   to = ["omp-talk"]
-   rights = ["send"]
-   ```
-
-   Allow both directions for request and reply. A host allowed to contact the relay can discover its listening omp addresses. Keep this allowlist narrow.
-3. With the `tern-link` port running, run `/tern-talk relay` from any omp composer in Tern. Leave the dedicated relay tab running. `tern-link ls` should show the `omp-talk` alias on each participating host once the directory updates.
-4. Send `@host/ZKAPI Review the API error handling`. The recipient gets a request card and can use `/tern-talk accept ID` to run it as a prompt, or `/tern-talk reply ID TEXT` to send a reply without running the agent. Remote requests are never auto-run.
-
-Cross-host delivery on Windows requires a working Windows `tern-link` port and has not been verified for this release.
+Versions before 0.2.0 delivered through tern-link and a switchboard window. That transport is gone, so v0.1.x and v0.2.x hosts cannot talk to each other.
 
 ## Credit
 

@@ -1,9 +1,8 @@
 import type { AutocompleteItem, AutocompleteProvider } from "@oh-my-pi/pi-tui";
-import { randomUUID } from "node:crypto";
 import { discoverAgents } from "./discovery.ts";
-import { alias, livePeers, paneAlias, peerAddresses, relayAlias, remoteHosts, remoteSend, visiblePanes, type Delivery, type Peer, type PeerAddress } from "./mail.ts";
+import { livePeers, paneAlias, peerAddresses, visiblePanes, type Peer, type PeerAddress } from "./mail.ts";
+import { remoteAliases, remoteHosts } from "./net.ts";
 
-const queryLifetime = 15_000;
 const cacheLifetime = 30_000;
 const menuWait = 4_000;
 
@@ -30,7 +29,7 @@ async function waitForMenu(result: Promise<string[]>, signal?: AbortSignal): Pro
 	finally { done.removeEventListener("abort", abort); }
 }
 
-type Lookup = { id: string; to: string; expires: number; result: Promise<string[]>; finish(names: string[]): void };
+type Lookup = { expires: number; result: Promise<string[]> };
 type LocalDirectory = { peers: PeerAddress[]; visible: { pane: string; name: string; label: string; kind: string }[] };
 // The editor passes these rows through to SelectList, which supports disabled items.
 type PickerItem = AutocompleteItem & { disabled?: true };
@@ -56,29 +55,13 @@ export function addressCompletion(pane: string, currentPeer: () => Peer | undefi
 	}
 
 	function discover(host: string, signal?: AbortSignal): Promise<string[]> {
-		const peer = currentPeer();
-		if (!peer || signal?.aborted) return Promise.resolve([]);
-		const existing = remote.get(host);
-		if (existing && existing.expires > Date.now()) return waitForMenu(existing.result, signal);
-		existing?.finish([]);
-		const { promise, resolve } = Promise.withResolvers<string[]>();
-		const lookup: Lookup = { id: randomUUID(), to: peer.key, expires: Date.now() + queryLifetime, result: promise, finish: resolve };
-		remote.set(host, lookup);
-		void remoteSend(host, { v: 1, kind: "discover", id: lookup.id, from: peer.name, sender: peer.key, to: relayAlias, text: "aliases" })
-			.catch(() => lookup.finish([]));
-		AbortSignal.timeout(queryLifetime).addEventListener("abort", () => resolve([]), { once: true });
-		return waitForMenu(promise, signal);
-	}
-
-	function receive({ host, message }: Delivery) {
-		if (message.kind !== "directory") return false;
-		const lookup = host && remote.get(host);
-		if (lookup && lookup.id === message.id && lookup.to === message.to && lookup.expires > Date.now() &&
-			message.from === relayAlias) {
-			lookup.expires = Date.now() + cacheLifetime;
-			lookup.finish(message.text === "-" ? [] : message.text.split(",").filter(name => alias.test(name)));
+		if (!currentPeer() || signal?.aborted) return Promise.resolve([]);
+		let lookup = remote.get(host);
+		if (!lookup || lookup.expires <= Date.now()) {
+			lookup = { expires: Date.now() + cacheLifetime, result: remoteAliases(host).catch(() => []) };
+			remote.set(host, lookup);
 		}
-		return true;
+		return waitForMenu(lookup.result, signal);
 	}
 
 	async function suggestions(prefix: string, signal?: AbortSignal) {
@@ -215,8 +198,7 @@ export function addressCompletion(pane: string, currentPeer: () => Peer | undefi
 		};
 	}
 
-	return { wrap, receive, clear() {
-		for (const lookup of remote.values()) lookup.finish([]);
+	return { wrap, clear() {
 		remote.clear();
 		recent = undefined;
 	} };

@@ -6,42 +6,38 @@ import { join } from "node:path";
 export const alias = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 export const id = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 export const lifetime = 10 * 60_000;
-export const relayAlias = "omp-talk";
 const root = join(process.env.OMP_TERN_TALK_HOME ?? join(homedir(), ".omp", "tern-talk"), "peers");
-const linkHome = process.env.TERN_LINK_HOME ?? (process.platform === "win32"
-	? join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "tern-link")
-	: join(homedir(), ".tern-link"));
 const terminalControl = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/;
+const maxMessage = 60 * 1024;
 
 export type Peer = { key: string; name: string; pane: string; pid: number; automatic?: true };
-export type Message = { v: 1; id: string; from: string; sender: string; to: string; text: string } &
-	({ kind: "request"; deadline?: number } | { kind: "discover" | "reply" | "rejected" | "directory" });
+export type Message = { v: 2; id: string; from: string; sender: string; to: string; text: string } &
+	({ kind: "request"; deadline?: number } | { kind: "reply" });
 export type Delivery = { host?: string; message: Message };
 
 function isMessage(value: unknown): value is Message {
 	if (!value || typeof value !== "object") return false;
 	const m = value as Message;
-	return m.v === 1 && typeof m.id === "string" && id.test(m.id) && typeof m.from === "string" && alias.test(m.from) &&
+	return m.v === 2 && typeof m.id === "string" && id.test(m.id) && typeof m.from === "string" && alias.test(m.from) &&
 		typeof m.sender === "string" && id.test(m.sender) && typeof m.text === "string" && !!m.text.trim() && !terminalControl.test(m.text) &&
 		typeof m.to === "string" && (m.kind === "request" ? alias.test(m.to) &&
 			(m.deadline === undefined || (Number.isSafeInteger(m.deadline) && m.deadline > 0)) :
-			m.kind === "discover" ? m.to === relayAlias :
-				(m.kind === "reply" || m.kind === "rejected" || m.kind === "directory") && id.test(m.to));
+			m.kind === "reply" && id.test(m.to));
 }
 
 export function encode(message: Message): string {
 	if (!isMessage(message)) throw new Error("Invalid Tern talk message (empty or containing terminal controls).");
 	const body = JSON.stringify(message);
-	if (Buffer.byteLength(body) > 4096) throw new Error("Message exceeds tern-link’s 4 KiB limit; shorten the text.");
+	if (Buffer.byteLength(body) > maxMessage) throw new Error("Message exceeds Tern talk’s 60 KiB limit; shorten the text.");
 	return body;
 }
 
 export function decode(body: string): Message | undefined {
-	if (Buffer.byteLength(body) > 4096) return;
+	if (Buffer.byteLength(body) > maxMessage) return;
 	try {
 		const value: unknown = JSON.parse(body);
 		if (isMessage(value)) return value;
-	} catch { /* Not an omp-talk frame. */ }
+	} catch { /* Not a Tern talk message. */ }
 }
 
 async function readJson(path: string) {
@@ -49,10 +45,6 @@ async function readJson(path: string) {
 	catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 	}
-}
-
-export function relayRegistration() {
-	return readJson(join(linkHome, "aliases", `${relayAlias}.json`));
 }
 
 async function names(path: string): Promise<string[]> {
@@ -144,7 +136,7 @@ export async function drain(peer: Peer, receive: (delivery: Delivery) => void): 
 }
 
 export async function run(command: string, args: string[]): Promise<string> {
-	// Bun otherwise inherits its startup environment, before relay overrides.
+	// Pass the current environment explicitly; Bun otherwise uses its startup environment.
 	const child = Bun.spawn([command, ...args], { env: process.env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 5000 });
 	const [output, error, code] = await Promise.all([child.stdout.text(), child.stderr.text(), child.exited]);
 	if (code !== 0) throw new Error(error.trim() || `${command} exited with status ${code}`);
@@ -158,7 +150,7 @@ function blockAlias(value: string | null | undefined): string | undefined {
 	if (normalized && alias.test(normalized) && !paneAlias.test(normalized)) return normalized;
 }
 
-export async function visiblePanes(scope: "local" | "relay" = "local"): Promise<PaneDirectory> {
+export async function visiblePanes(scope: "local" | "remote" = "local"): Promise<PaneDirectory> {
 	type Block = { id: number; live: boolean; exited?: number | null; title?: string; cwd?: string };
 	const list = JSON.parse(await run("tern", ["ls", "--json"])) as {
 		sessions: { tabs: { name: string | null; blocks: Block[] }[] }[];
@@ -182,20 +174,4 @@ export async function visiblePanes(scope: "local" | "relay" = "local"): Promise<
 		}
 	}
 	return panes;
-}
-
-export async function remoteSend(host: string, message: Message): Promise<string> {
-	const discovery = message.kind === "discover" || message.kind === "directory";
-	return run("tern-link", ["send", "--no-enter", ...(discovery ? ["--ttl", "15"] : []), `${host}/${relayAlias}`, encode(message)]);
-}
-
-export async function remoteHosts(): Promise<string[]> {
-	const dir = await readJson(join(linkHome, "dir.json"));
-	if (!Array.isArray(dir?.hosts)) return [];
-	return dir.hosts.flatMap((peer: { name: string; aliases: string[] }) =>
-		typeof peer?.name === "string" && alias.test(peer.name) && Array.isArray(peer.aliases) && peer.aliases.includes(relayAlias) ? [peer.name] : []);
-}
-
-export async function remoteAvailable(host: string): Promise<boolean> {
-	return (await remoteHosts()).includes(host);
 }

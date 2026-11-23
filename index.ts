@@ -1,9 +1,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { Loader } from "@oh-my-pi/pi-tui";
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
 import { addressCompletion } from "./completion.ts";
-import { alias, drain, enqueue, id, lifetime, livePeers, paneAlias, peerByKey, peerName, peersByName, register, relayRegistration, remoteAvailable, remoteSend, run, unregister, visiblePanes, type Delivery, type Message, type Peer } from "./mail.ts";
+import { alias, drain, enqueue, id, lifetime, livePeers, paneAlias, peerByKey, peerName, peersByName, register, unregister, visiblePanes, type Delivery, type Message, type Peer } from "./mail.ts";
+import { ensureService, remoteHosts, remoteSend } from "./net.ts";
 
 const phrase = /^talk\s+with\s+@/i;
 const address = /^@([a-z0-9][a-z0-9_.-]{0,63})(?:\/([a-z0-9][a-z0-9_.-]{0,63}))?\s+([\s\S]+)$/i;
@@ -16,13 +16,12 @@ Send locally: @ZKAPI Check the API tests
 Send cross-host: @host/ZKAPI Check the API tests
 Type “@” in an empty draft, choose a block with Tab, then type your prompt. Quotes around the prompt are optional. For a file with the same name, use @./NAME.
 Agents can use tern_send to hand work to another block and pick it up again when the peer replies.
-For cross-host messaging, start a tern-link port on each host, then run /tern-talk relay to open a dedicated relay tab.
-Allow trusted peers to send to omp-talk in tern-link's policy.
-Hosts allowed to contact this relay can discover its listening omp aliases.
+Cross-host: every machine of yours on the same tailnet that ran setup.ts is reachable as @HOST/NAME while an omp session runs there.
+Only your own untagged Tailscale machines can reach this host's Tern talk service.
 Inbox: /tern-talk inbox · /tern-talk accept ID · /tern-talk reply ID TEXT
 Local requests run as normal agent turns when idle, with the block's usual tools and approvals. Cross-host requests wait for /tern-talk accept ID. Requests expire within 10 minutes; delegated requests time out earlier to leave their parent time to reply.
 The final answer appears in the sender as-is, without a second model turn. For a separate task here, append “; then here: TASK”. That clause stays in the sender.
-The composer shows an animated waiting indicator until replies arrive, are rejected, or expire. If a local recipient stops listening, its requests fail promptly and are not rerouted to a new session with the same name.
+The composer shows an animated waiting indicator until replies arrive or expire. A request to a missing or stopped recipient fails immediately and is not rerouted to a new session with the same name.
 Pause or restore automatic listening in this omp process: /tern-talk stop · /tern-talk start`;
 
 type ReceivedReply = { id: string; from: string; followUp?: string; text: string; failed?: true };
@@ -91,7 +90,6 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function receive(delivery: Delivery) {
-		if (completion.receive(delivery)) return;
 		const { host, message: m } = delivery;
 		const from = `@${host ? `${host}/` : ""}${m.from}`;
 		if (m.kind === "request") {
@@ -107,7 +105,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		const sent = pending.get(m.id);
 		if (!sent || m.to !== listening?.peer.key || sent.host !== host || sent.target !== m.from || (!host && sent.key !== m.sender)) return;
-		if (m.kind === "reply" || m.kind === "rejected") settle(m.id, sent, m.text, m.kind === "rejected" ? true : undefined);
+		if (m.kind === "reply") settle(m.id, sent, m.text);
 	}
 
 	function startReply(request: Received) {
@@ -172,16 +170,21 @@ export default function (pi: ExtensionAPI) {
 
 	async function listen(ctx: ExtensionContext) {
 		if (!enabled || listening) return;
-		const panes = await visiblePanes("relay").catch(() => undefined);
+		const panes = await visiblePanes("remote").catch(() => undefined);
 		const name = customName ?? panes?.get(paneId)?.name ?? `pane-${paneId}`;
 		const peer = await register(name, paneId, customName ? undefined : true);
 		let nextPeerCheck = 0;
+		let nextServiceCheck = 0;
 		const current: Listener = { peer, busy: false, timer: ctx.setInterval(async () => {
 			if (listening !== current || current.busy) return;
 			current.busy = true;
 			try {
 				const missing: [string, Pending][] = [];
 				const now = Date.now();
+				if (now >= nextServiceCheck) {
+					nextServiceCheck = now + 60_000;
+					void ensureService().catch(() => { /* Tailscale is down; local talk still works. */ });
+				}
 				if (pending.size && now >= nextPeerCheck) {
 					nextPeerCheck = now + 3_000;
 					const peers = new Map<string, Promise<Peer | undefined>>();
@@ -227,18 +230,9 @@ export default function (pi: ExtensionAPI) {
 		const target = second ?? first;
 		const host = second ? first : undefined;
 		let peer: Peer | undefined;
-		if (host) {
-			const known = await remoteAvailable(host).catch(error => {
-				if (explicit) throw error;
-				return false;
-			});
-			if (!known) {
-				if (!explicit) return false;
-				throw new Error(`No @${host} omp-talk relay in the tern-link directory; check ‘tern-link ls’.`);
-			}
-		}
+		if (host && !explicit && !(await remoteHosts()).includes(host)) return false;
 		const source = listening?.peer;
-		const panes = await visiblePanes(host ? "relay" : "local").catch(error => {
+		const panes = await visiblePanes(host ? "remote" : "local").catch(error => {
 			if (!host && explicit) throw error;
 			return undefined;
 		});
@@ -259,15 +253,15 @@ export default function (pi: ExtensionAPI) {
 		const now = Date.now();
 		const expires = parent ? parent.expires - replyReserveMs : now + lifetime;
 		if (expires <= now) throw new Error("Not enough time remains on this request to delegate and still reply.");
-		const message: Message = { v: 1, id: randomUUID(), kind: "request", sender: source.key,
+		const message: Message = { v: 2, id: randomUUID(), kind: "request", sender: source.key,
 			from: peerName(source, panes), to: target, text, deadline: expires };
 		const route: Pending = { target, host, key: peer?.key, followUp, parent, expires };
 		if (parent) (parent.dependencies ??= new Map()).set(message.id, undefined);
 		pending.set(message.id, route);
 		try {
 			if (host) {
-				const receipt = await remoteSend(host, message);
-				show(`Queued Tern talk to @${host}/${target} (${message.id}; tern-link receipt ${receipt}).`);
+				await remoteSend(host, message);
+				show(`Sent Tern talk to @${host}/${target} (${message.id}).`);
 			} else if (peer) {
 				await enqueue(peer, { message });
 				show(`Sent Tern talk to @${target} (${message.id}).`);
@@ -289,7 +283,7 @@ export default function (pi: ExtensionAPI) {
 		if (!request || !source) {
 			throw new Error("No matching open request authorized for this reply.");
 		}
-		const message: Message = { v: 1, id: key, kind: "reply", from: request.message.to, sender: source.key, to: request.message.sender, text };
+		const message: Message = { v: 2, id: key, kind: "reply", from: request.message.to, sender: source.key, to: request.message.sender, text };
 		inbox.delete(key);
 		try {
 			if (request.host) await remoteSend(request.host, message);
@@ -358,7 +352,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("tern-talk", {
-		description: "Manage Tern talk addresses, requests, and the cross-host relay",
+		description: "Manage Tern talk addresses and requests",
 		async handler(args, ctx) {
 			if (ctx.agent.kind !== "main" || ctx.mode !== "tui") return;
 			const [, action, rest = ""] = /^(\S+)(?:\s+([\s\S]*))?$/.exec(args.trim()) ?? [];
@@ -386,22 +380,6 @@ export default function (pi: ExtensionAPI) {
 						await stop(ctx);
 						ctx.ui.notify("Stopped listening for Tern talk.", "info");
 						break;
-					case "relay": {
-						const relay = await relayRegistration();
-						if (relay) {
-							ctx.ui.notify(`Tern talk relay already registered in pane ${relay.pane}.`, "info");
-							break;
-						}
-						const args = ["new", "tab", "--", "bun", fileURLToPath(new URL("./relay.ts", import.meta.url))];
-						// The Tern daemon launches the tab, not this omp process.
-						for (const key of ["TERN_LINK_HOME", "OMP_TERN_TALK_HOME", "TERN_DAEMON_SOCKET"]) {
-							const value = process.env[key];
-							if (value !== undefined) args.push(`${key}=${value}`);
-						}
-						await run("tern", args);
-						ctx.ui.notify("Opened the Tern talk relay tab. Check it for startup status.", "info");
-						break;
-					}
 					case "inbox":
 						expire();
 						show([...inbox.values()].map(({ host, message: m, state }) =>

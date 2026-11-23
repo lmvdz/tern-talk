@@ -170,7 +170,7 @@ export default function (pi: ExtensionAPI) {
 
 	async function listen(ctx: ExtensionContext) {
 		if (!enabled || listening) return;
-		const panes = await visiblePanes("remote").catch(() => undefined);
+		const panes = await visiblePanes().catch(() => undefined);
 		const name = customName ?? panes?.get(paneId)?.name ?? `pane-${paneId}`;
 		const peer = await register(name, paneId, customName ? undefined : true);
 		let nextPeerCheck = 0;
@@ -220,6 +220,7 @@ export default function (pi: ExtensionAPI) {
 			} finally { current.busy = false; }
 		}, 750) };
 		listening = current;
+		completion.warm();
 	}
 
 	async function send(
@@ -232,7 +233,7 @@ export default function (pi: ExtensionAPI) {
 		let peer: Peer | undefined;
 		if (host && !explicit && !(await remoteHosts()).includes(host)) return false;
 		const source = listening?.peer;
-		const panes = await visiblePanes(host ? "remote" : "local").catch(error => {
+		const panes = await visiblePanes().catch(error => {
 			if (!host && explicit) throw error;
 			return undefined;
 		});

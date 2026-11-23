@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -145,17 +146,44 @@ export async function run(command: string, args: string[]): Promise<string> {
 
 export const paneAlias = /^pane-\d+$/;
 
+// Returns the last loaded value at once and reloads it in the background once older than maxAge.
+// Only the first call, or one after a failure, waits for the load.
+export function refreshing<T>(maxAge: number, load: () => Promise<T>): (fresh?: boolean) => Promise<T> {
+	let value: Promise<T> | undefined;
+	let at = 0;
+	let reloading = false;
+	return (fresh = false) => {
+		if (!value || fresh) {
+			const next = load();
+			value = next;
+			at = Date.now();
+			next.catch(() => { if (value === next) value = undefined; });
+			return next;
+		}
+		if (Date.now() - at > maxAge && !reloading) {
+			reloading = true;
+			// Spawning a process blocks for ~0.1 s on Windows; start the reload after this caller is served.
+			setTimeout(() => load().then(loaded => { value = Promise.resolve(loaded); at = Date.now(); }, () => {}).finally(() => { reloading = false; }), 50);
+		}
+		return value;
+	};
+}
+
+// The service runs outside Tern panes, where `tern` may not be on PATH (macOS app bundle).
+export const tern = process.env.TERN_BIN ?? Bun.which("tern") ??
+	["/Applications/Tern.app/Contents/MacOS/tern", "/usr/local/bin/tern"].find(path => existsSync(path)) ?? "tern";
+
 function blockAlias(value: string | null | undefined): string | undefined {
 	const normalized = value?.trim().replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^[^A-Za-z0-9]+|-+$/g, "").slice(0, 64);
 	if (normalized && alias.test(normalized) && !paneAlias.test(normalized)) return normalized;
 }
 
-export async function visiblePanes(scope: "local" | "remote" = "local"): Promise<PaneDirectory> {
+export async function visiblePanes(): Promise<PaneDirectory> {
 	type Block = { id: number; live: boolean; exited?: number | null; title?: string; cwd?: string };
-	const list = JSON.parse(await run("tern", ["ls", "--json"])) as {
+	const list = JSON.parse(await run(tern, ["ls", "--json"])) as {
 		sessions: { tabs: { name: string | null; blocks: Block[] }[] }[];
 	};
-	const panes = new Map<string, { name: string; label: string }>();
+	const panes = new Map<string, { name: string; label: string; full?: string }>();
 	for (const { tabs } of list.sessions) {
 		for (const tab of tabs) {
 			const tabLabel = tab.name?.trim();
@@ -164,14 +192,20 @@ export async function visiblePanes(scope: "local" | "remote" = "local"): Promise
 				if (!block.live || block.exited != null) continue;
 				const title = block.title?.replace(/^[\s\p{Co}\uFE0F]+/u, "").trim();
 				const titleLabel = title && !/^omp$/i.test(title) ? title : undefined;
-				// Generated task titles stay local; don't advertise them across hosts.
-				const publishedTitle = scope === "local" || (titleLabel && alias.test(titleLabel)) ? titleLabel : undefined;
+				// omp task titles read "CODE: description"; the code is the address.
+				const titleCode = titleLabel && /^([A-Za-z0-9][A-Za-z0-9_.-]{0,31}):\s/.exec(titleLabel)?.[1];
 				const cwdLabel = block.cwd?.split(/[/\\]/).filter(Boolean).at(-1);
-				const label = tabLabel || publishedTitle || cwdLabel || "Unnamed omp block";
-				const name = tabName ?? blockAlias(publishedTitle) ?? blockAlias(cwdLabel) ?? `pane-${block.id}`;
-				panes.set(String(block.id), { name, label });
+				const label = tabLabel || titleLabel || cwdLabel || "Unnamed omp block";
+				const name = tabName ?? blockAlias(titleCode || titleLabel) ?? blockAlias(cwdLabel) ?? `pane-${block.id}`;
+				panes.set(String(block.id), { name, label, full: !tabName && titleCode ? blockAlias(titleLabel) : undefined });
 			}
 		}
+	}
+	// Two blocks with the same code ("TERN: …") fall back to their full titles before pane IDs.
+	const counts = new Map<string, number>();
+	for (const { name } of panes.values()) counts.set(name, (counts.get(name) ?? 0) + 1);
+	for (const [id, pane] of panes) {
+		panes.set(id, { name: (counts.get(pane.name) ?? 0) > 1 && pane.full ? pane.full : pane.name, label: pane.label });
 	}
 	return panes;
 }

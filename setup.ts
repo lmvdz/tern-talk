@@ -59,7 +59,11 @@ dest="$HOME/.omp/tern-talk-releases/${version}"
 rm -rf "$dest"; mkdir -p "$dest"
 tar -xzf "${archive}" -C "$dest"; rm -f "${archive}"
 omp install "$dest"
-command -v tern >/dev/null 2>&1 && echo "tern: $(tern --version)" || echo "TERN_MISSING"
+# Replace a running service from an earlier install; omp sessions start the new one.
+pkill -f 'tern-talk-releases/.*/daemon.ts' 2>/dev/null || true
+if command -v tern >/dev/null 2>&1; then echo "tern: $(tern --version)"
+elif [ -x /Applications/Tern.app/Contents/MacOS/tern ]; then echo "tern: $(/Applications/Tern.app/Contents/MacOS/tern --version)"
+else echo "TERN_MISSING"; fi
 command -v tailscale >/dev/null 2>&1 || [ -x /Applications/Tailscale.app/Contents/MacOS/Tailscale ] || echo "TAILSCALE_MISSING"
 `;
 
@@ -75,6 +79,7 @@ tar.exe -xzf '${archive}' -C $dest
 Remove-Item -Force '${archive}'
 omp install $dest
 if ($LASTEXITCODE) { throw "omp install failed" }
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*tern-talk-releases*daemon.ts*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 if (Get-Command tern -ErrorAction SilentlyContinue) { "tern: $(tern --version)" } else { 'TERN_MISSING' }
 if (-not (Get-Command tailscale -ErrorAction SilentlyContinue)) { 'TAILSCALE_MISSING' }
 if (-not (Get-NetFirewallRule -DisplayName 'Tern Talk' -ErrorAction SilentlyContinue)) {

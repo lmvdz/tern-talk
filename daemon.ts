@@ -33,7 +33,7 @@ async function receive(host: string, body: string): Promise<Response> {
 	const receipt = `${host}/${message.kind}/${message.id}`;
 	if (seen.has(receipt)) return Response.json({ ok: true });
 	if (message.kind === "request") {
-		const panes = await visiblePanes("remote").catch(() => undefined);
+		const panes = await visiblePanes().catch(() => undefined);
 		const targets = peersByName(message.to, await livePeers(), panes);
 		if (targets.length !== 1) {
 			return fail(404, targets.length ? `@${message.to} is ambiguous on @${self.name}.` : `No omp session is listening as @${message.to} on @${self.name}.`);
@@ -57,8 +57,8 @@ const server = Bun.serve({
 		const { pathname } = new URL(request.url);
 		if (request.method === "GET" && pathname === "/v1/health") return Response.json({ name: self.name, v: 2 });
 		if (request.method === "GET" && pathname === "/v1/aliases") {
-			const panes = await visiblePanes("remote").catch(() => undefined);
-			return Response.json(peerAddresses(await livePeers(), panes).map(address => address.address));
+			const panes = await visiblePanes().catch(() => undefined);
+			return Response.json(peerAddresses(await livePeers(), panes).map(({ address, label }) => ({ address, label })));
 		}
 		if (request.method === "POST" && pathname === "/v1/message") {
 			const body = await request.text();

@@ -1,5 +1,7 @@
 // Process-based agent discovery inspired by Wolfgang Schoenberger's tern-control (MIT).
 // https://github.com/wolfiesch/tern-control — see THIRD_PARTY_NOTICES.
+import { tern } from "./mail.ts";
+
 const binaries: Record<string, string> = {
 	omp: "omp", pi: "Pi", claude: "Claude Code", codex: "Codex",
 	opencode: "OpenCode", gemini: "Gemini CLI", amp: "Amp",
@@ -31,15 +33,15 @@ function agentKind(process?: Process): string | undefined {
 
 export async function discoverAgents(paneIds: string[]): Promise<{ pane: string; kind: string }[]> {
 	if (!paneIds.length) return [];
-	// Cap the added latency when the daemon is slow or panes close mid-scan.
-	const signal = AbortSignal.timeout(350);
+	// Runs behind the picker's cached directory, so it can wait for slow `tern process` calls (~0.7 s on Windows).
+	const signal = AbortSignal.timeout(3_000);
 	const pending = paneIds.values();
 	const discovered: { pane: string; kind: string }[] = [];
 	await Promise.all(Array.from({ length: Math.min(8, paneIds.length) }, async () => {
 		for (let next = pending.next(); !next.done && !signal.aborted; next = pending.next()) {
 			const pane = next.value;
 			try {
-				const probe = Bun.spawn(["tern", "process", pane, "--json"], { stdin: "ignore", stdout: "pipe", stderr: "ignore", signal });
+				const probe = Bun.spawn([tern, "process", pane, "--json"], { stdin: "ignore", stdout: "pipe", stderr: "ignore", signal });
 				const [output, code] = await Promise.all([probe.stdout.text(), probe.exited]);
 				if (code !== 0) continue;
 				const process: { foreground?: Process | null; child?: Process | null } = JSON.parse(output);

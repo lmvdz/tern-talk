@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { alias, encode, type Message } from "./mail.ts";
+import { alias, encode, refreshing, type Message } from "./mail.ts";
 
 export const port = Number(process.env.TERN_TALK_PORT) || 7470;
 
@@ -27,24 +27,17 @@ function node(status: StatusNode): Node | undefined {
 	return { name, ip, user: status.UserID, tagged: !!status.Tags?.length, online: !!status.Online, os: status.OS ?? "" };
 }
 
-let cached: { at: number; value: Promise<Tailnet> } | undefined;
-
-export function tailnet(fresh = false): Promise<Tailnet> {
-	if (!fresh && cached && Date.now() - cached.at < 10_000) return cached.value;
-	const value = (async () => {
-		const child = Bun.spawn([tailscaleBinary(), "status", "--json"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 5000 });
-		const [output, error, code] = await Promise.all([child.stdout.text(), child.stderr.text(), child.exited]);
-		if (code !== 0) throw new Error(`tailscale status failed: ${error.trim() || `exit ${code}`}`);
-		const status = JSON.parse(output) as { Self?: StatusNode; Peer?: Record<string, StatusNode> };
-		const self = status.Self && node(status.Self);
-		if (!self) throw new Error("Tailscale is not connected on this host.");
-		const peers = Object.values(status.Peer ?? {}).flatMap(peer => node(peer) ?? []);
-		return { self, peers };
-	})();
-	cached = { at: Date.now(), value };
-	value.catch(() => { if (cached?.value === value) cached = undefined; });
-	return value;
-}
+// `tailscale status` takes about a second on Windows; callers get the last result while it reloads.
+export const tailnet = refreshing(10_000, async (): Promise<Tailnet> => {
+	const child = Bun.spawn([tailscaleBinary(), "status", "--json"], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 5000 });
+	const [output, error, code] = await Promise.all([child.stdout.text(), child.stderr.text(), child.exited]);
+	if (code !== 0) throw new Error(`tailscale status failed: ${error.trim() || `exit ${code}`}`);
+	const status = JSON.parse(output) as { Self?: StatusNode; Peer?: Record<string, StatusNode> };
+	const self = status.Self && node(status.Self);
+	if (!self) throw new Error("Tailscale is not connected on this host.");
+	const peers = Object.values(status.Peer ?? {}).flatMap(peer => node(peer) ?? []);
+	return { self, peers };
+});
 
 // Only this tailnet user's own, untagged machines may talk to each other.
 export function trusted(net: Tailnet, candidate: Node): boolean {
@@ -77,31 +70,28 @@ export async function remoteSend(host: string, message: Message): Promise<void> 
 	throw new Error(detail?.error ?? `@${host} refused the message (HTTP ${response.status}).`);
 }
 
-export async function remoteAliases(host: string, signal?: AbortSignal): Promise<string[]> {
+export type RemoteBlock = { address: string; label: string };
+
+export async function remoteAliases(host: string, signal?: AbortSignal): Promise<RemoteBlock[]> {
 	const response = await call(host, "/v1/aliases", { signal });
 	if (!response.ok) return [];
-	const names = await response.json().catch(() => []) as unknown;
-	return Array.isArray(names) ? names.filter((name): name is string => typeof name === "string" && alias.test(name)) : [];
+	const blocks = await response.json().catch(() => []) as unknown;
+	return Array.isArray(blocks) ? blocks.filter((block): block is RemoteBlock =>
+		typeof block?.address === "string" && alias.test(block.address) && typeof block.label === "string") : [];
 }
-
-let hostScan: { at: number; value: Promise<string[]> } | undefined;
 
 // Online machines of this user that answer as Tern talk hosts, this one excluded.
-export function remoteHosts(): Promise<string[]> {
-	if (hostScan && Date.now() - hostScan.at < 30_000) return hostScan.value;
-	const value = tailnet().then(async net => {
-		const candidates = net.peers.filter(peer => peer.online && trusted(net, peer));
-		const live = await Promise.all(candidates.map(async peer => {
-			try {
-				const response = await fetch(`http://${peer.ip}:${port}/v1/health`, { signal: AbortSignal.timeout(1200) });
-				return response.ok ? peer.name : undefined;
-			} catch { return undefined; }
-		}));
-		return live.filter((name): name is string => !!name);
-	}).catch(() => []);
-	hostScan = { at: Date.now(), value };
-	return value;
-}
+export const remoteHosts = refreshing(30_000, async (): Promise<string[]> => {
+	const net = await tailnet();
+	const candidates = net.peers.filter(peer => peer.online && trusted(net, peer));
+	const live = await Promise.all(candidates.map(async peer => {
+		try {
+			const response = await fetch(`http://${peer.ip}:${port}/v1/health`, { signal: AbortSignal.timeout(1200) });
+			return response.ok ? peer.name : undefined;
+		} catch { return undefined; }
+	}));
+	return live.filter((name): name is string => !!name);
+});
 
 function bunBinary(): string {
 	const home = join(homedir(), ".bun", "bin", process.platform === "win32" ? "bun.exe" : "bun");

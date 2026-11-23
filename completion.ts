@@ -1,9 +1,9 @@
 import type { AutocompleteItem, AutocompleteProvider } from "@oh-my-pi/pi-tui";
 import { discoverAgents } from "./discovery.ts";
-import { livePeers, paneAlias, peerAddresses, visiblePanes, type Peer, type PeerAddress } from "./mail.ts";
-import { remoteAliases, remoteHosts } from "./net.ts";
+import { livePeers, paneAlias, peerAddresses, refreshing, visiblePanes, type Peer, type PeerAddress } from "./mail.ts";
+import { remoteAliases, remoteHosts, type RemoteBlock } from "./net.ts";
 
-const cacheLifetime = 30_000;
+const cacheLifetime = 15_000;
 const menuWait = 4_000;
 
 function tokenAt(lines: string[], row: number, col: number) {
@@ -18,55 +18,55 @@ function tokenAt(lines: string[], row: number, col: number) {
 	if (bare) return { prefix: bare[1], bare: true };
 }
 
-async function waitForMenu(result: Promise<string[]>, signal?: AbortSignal): Promise<string[]> {
+async function waitForMenu<T>(result: Promise<T[]>, signal?: AbortSignal): Promise<T[]> {
 	const timeout = AbortSignal.timeout(menuWait);
 	const done = signal ? AbortSignal.any([timeout, signal]) : timeout;
 	if (done.aborted) return [];
-	const { promise, resolve } = Promise.withResolvers<string[]>();
+	const { promise, resolve } = Promise.withResolvers<T[]>();
 	const abort = () => resolve([]);
 	done.addEventListener("abort", abort, { once: true });
 	try { return await Promise.race([result, promise]); }
 	finally { done.removeEventListener("abort", abort); }
 }
 
-type Lookup = { expires: number; result: Promise<string[]> };
 type LocalDirectory = { peers: PeerAddress[]; visible: { pane: string; name: string; label: string; kind: string }[] };
 // The editor passes these rows through to SelectList, which supports disabled items.
 type PickerItem = AutocompleteItem & { disabled?: true };
 
 export function addressCompletion(pane: string, currentPeer: () => Peer | undefined) {
-	const remote = new Map<string, Lookup>();
-	let recent: { expires: number; result: Promise<LocalDirectory> } | undefined;
+	const remote = new Map<string, () => Promise<RemoteBlock[]>>();
 	const ternItems = new WeakMap<AutocompleteItem, { address: string; name: string } | { command: string }>();
 
-	function local() {
-		if (recent && recent.expires > Date.now()) return recent.result;
-		const result = visiblePanes().then(async panes => {
-			const listeners = await livePeers(panes);
-			const registered = new Set(listeners.map(peer => peer.pane));
-			registered.add(pane);
-			const detected = await discoverAgents([...panes.keys()].filter(id => !registered.has(id)));
-			const visible = detected.map(agent => ({ ...agent, ...panes.get(agent.pane)! }))
-				.sort((a, b) => a.label.localeCompare(b.label) || a.pane.localeCompare(b.pane));
-			return { peers: peerAddresses(listeners, panes, pane), visible };
-		}).catch(() => ({ peers: [], visible: [] }));
-		recent = { result, expires: Date.now() + 1_000 };
-		return result;
-	}
+	// `tern ls` and `tern process` take most of a second on Windows: serve the last directory while refreshing.
+	const local = refreshing(1_500, async (): Promise<LocalDirectory> => {
+		const panes = await visiblePanes();
+		const listeners = await livePeers(panes);
+		const registered = new Set(listeners.map(peer => peer.pane));
+		registered.add(pane);
+		const detected = await discoverAgents([...panes.keys()].filter(id => !registered.has(id)));
+		const visible = detected.map(agent => ({ ...agent, ...panes.get(agent.pane)! }))
+			.sort((a, b) => a.label.localeCompare(b.label) || a.pane.localeCompare(b.pane));
+		return { peers: peerAddresses(listeners, panes, pane), visible };
+	});
 
-	function discover(host: string, signal?: AbortSignal): Promise<string[]> {
-		if (!currentPeer() || signal?.aborted) return Promise.resolve([]);
+	function blocksOf(host: string): Promise<RemoteBlock[]> {
 		let lookup = remote.get(host);
-		if (!lookup || lookup.expires <= Date.now()) {
-			lookup = { expires: Date.now() + cacheLifetime, result: remoteAliases(host).catch(() => []) };
+		if (!lookup) {
+			lookup = refreshing(cacheLifetime, () => remoteAliases(host));
 			remote.set(host, lookup);
 		}
-		return waitForMenu(lookup.result, signal);
+		return lookup().catch(() => []);
+	}
+
+	// Loads every directory before the first "@", so the picker opens without waiting.
+	function warm() {
+		local().catch(() => {});
+		remoteHosts().then(hosts => { for (const host of hosts) void blocksOf(host); }, () => {});
 	}
 
 	async function suggestions(prefix: string, signal?: AbortSignal) {
 		const slash = prefix.indexOf("/");
-		const hosts = remoteHosts().catch(() => []);
+		const hosts = remoteHosts().catch(() => [] as string[]);
 		const query = prefix.toLowerCase();
 		const items: PickerItem[] = [];
 		function add(item: AutocompleteItem, address = item.value, name = address) {
@@ -75,7 +75,7 @@ export function addressCompletion(pane: string, currentPeer: () => Peer | undefi
 			items.push(item);
 		}
 		if (slash < 0) {
-			const [{ peers, visible }, knownHosts] = await Promise.all([local(), hosts]);
+			const [{ peers, visible }, knownHosts] = await Promise.all([local().catch(() => ({ peers: [], visible: [] })), hosts]);
 			for (const peer of peers) {
 				const name = `@${peer.name}`;
 				const address = `@${peer.address}`;
@@ -85,7 +85,10 @@ export function addressCompletion(pane: string, currentPeer: () => Peer | undefi
 					description: paneAlias.test(peer.address) ? `Local omp block · pane ${peer.pane}` : "Local omp block",
 				}, address, name);
 			}
-			for (const host of knownHosts.sort()) add({ value: `@${host}/`, label: `@${host}/`, description: "Remote Tern host · browse blocks" });
+			for (const host of knownHosts.sort()) {
+				void blocksOf(host);
+				add({ value: `@${host}/`, label: `@${host}/`, description: "Remote Tern host · browse blocks" });
+			}
 			for (const agent of visible) {
 				if (!`@${agent.name.toLowerCase()}`.startsWith(query) && !`@${agent.kind.toLowerCase()}`.startsWith(query)) continue;
 				items.push({
@@ -97,10 +100,10 @@ export function addressCompletion(pane: string, currentPeer: () => Peer | undefi
 			}
 		} else {
 			const host = prefix.slice(1, slash).toLowerCase();
-			if (!(await hosts).includes(host)) return null;
-			for (const name of await discover(host, signal)) {
-				const value = `@${host}/${name}`;
-				add({ value, label: value, description: "Remote omp block" });
+			if (!(await hosts).includes(host) || !currentPeer()) return null;
+			for (const block of await waitForMenu(blocksOf(host), signal)) {
+				const value = `@${host}/${block.address}`;
+				add({ value, label: block.label === block.address ? value : `${value} · ${block.label}`, description: "Remote omp block" });
 			}
 		}
 		return items;
@@ -113,7 +116,10 @@ export function addressCompletion(pane: string, currentPeer: () => Peer | undefi
 		signal?: AbortSignal,
 	) {
 		const peer = currentPeer();
-		const [matches, paths] = await Promise.all([peer ? suggestions(token.prefix, signal) : undefined, token.bare ? getFiles() : undefined]);
+		// A known remote host prefix never names a file; skip the file search it would trigger.
+		const slash = token.prefix.indexOf("/");
+		const remoteHost = slash > 0 && (await remoteHosts().catch(() => [] as string[])).includes(token.prefix.slice(1, slash).toLowerCase());
+		const [matches, paths] = await Promise.all([peer ? suggestions(token.prefix, signal) : undefined, token.bare && !remoteHost ? getFiles() : undefined]);
 		const items = matches ?? [];
 		if (signal?.aborted) return null;
 		if (canReplaceDraft && token.prefix === "@" && (!peer || !items.length)) {
@@ -198,8 +204,7 @@ export function addressCompletion(pane: string, currentPeer: () => Peer | undefi
 		};
 	}
 
-	return { wrap, clear() {
+	return { wrap, warm, clear() {
 		remote.clear();
-		recent = undefined;
 	} };
 }

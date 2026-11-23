@@ -11,7 +11,7 @@ import packageJson from "./package.json" with { type: "json" };
 export const port = Number(process.env.TERN_TALK_PORT) || 7470;
 export const { version } = packageJson;
 
-export type Node = { name: string; ip: string; user: number; tagged: boolean; online: boolean; os: string };
+export type Node = { name: string; label: string; ip: string; user: number; tagged: boolean; online: boolean; os: string };
 export type Tailnet = { self: Node; peers: Node[] };
 
 function tailscaleBinary(): string {
@@ -26,7 +26,7 @@ function node(status: StatusNode): Node | undefined {
 	const name = (status.DNSName?.split(".")[0] || status.HostName || "").toLowerCase();
 	const ip = status.TailscaleIPs?.find(address => address.includes("."));
 	if (!alias.test(name) || !ip || typeof status.UserID !== "number") return;
-	return { name, ip, user: status.UserID, tagged: !!status.Tags?.length, online: !!status.Online, os: status.OS ?? "" };
+	return { name, label: status.HostName ?? name, ip, user: status.UserID, tagged: !!status.Tags?.length, online: !!status.Online, os: status.OS ?? "" };
 }
 
 // `tailscale status` takes about a second on Windows; callers get the last result while it reloads.

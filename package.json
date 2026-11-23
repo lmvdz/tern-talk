@@ -1,6 +1,6 @@
 {
   "name": "tern-talk",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "private": true,
   "license": "UNLICENSED",
   "description": "Address omp sessions by name in Tern and exchange correlated replies.",

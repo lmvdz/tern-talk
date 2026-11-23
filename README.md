@@ -29,6 +29,8 @@ In an omp session inside Tern, type `@` in an empty composer and pick a block. O
 @ip-172-31-19-172/ZKAPI Review the API error handling; then here: fix anything the review finds
 ```
 
+Plain English works too: `tell TERN on lars macbook to check the tests`, `ask MORTG on mac: summarize the budget`, `tell ZKAPI run the ceremony`. The verb is `tell`, `ask`, `message`, `ping` or `have`. Host words match any part of a machine's Tailscale name, display name or OS (`mac`, `linux`, `lars macbook`). Without `on …`, a block on this machine wins, then a unique block of that name on another machine. Text that names no real block, like `tell me about X`, goes to the agent as usual.
+
 The `; then here:` clause runs only in the sender after a reply. Agents can hand work off with `tern_send` and resume from a correlated reply. Every omp session in Tern listens automatically under its tab or block name; `/tern-talk listen NAME` sets an explicit address and `/tern-talk stop` pauses it. Requests from this machine and from your other machines run automatically when the recipient is idle, under its usual tool approvals, and the final answer goes back to the sender. `/tern-talk reply ID TEXT` answers by hand instead.
 
 ## How cross-host delivery works

@@ -3,8 +3,9 @@ import { Loader } from "@oh-my-pi/pi-tui";
 import { randomUUID } from "node:crypto";
 import { addressCompletion } from "./completion.ts";
 import { readFileSync } from "node:fs";
-import { alias, drain, enqueue, id, lifetime, livePeers, paneAlias, peerByKey, peerName, peersByName, register, run, tern, unregister, visiblePanes, type Delivery, type Message, type Peer } from "./mail.ts";
+import { alias, drain, enqueue, id, lifetime, livePeers, paneAlias, peerAddresses, peerByKey, peerName, peersByName, register, run, tern, unregister, visiblePanes, type Delivery, type Message, type Peer } from "./mail.ts";
 import { ensureService, remoteHosts, remoteSend } from "./net.ts";
+import { naturalAddress } from "./natural.ts";
 
 // Read at evaluation, so a reload of this module sees the version it loaded.
 const packageFile = new URL("./package.json", import.meta.url);
@@ -329,13 +330,20 @@ export default function (pi: ExtensionAPI) {
 	pi.on("input", async (event, ctx) => {
 		if (ctx.agent.kind !== "main" || ctx.mode !== "tui") return;
 		const input = event.text.trim();
-		const explicit = phrase.test(input);
-		const match = address.exec(explicit ? input.replace(phrase, "@") : input);
+		// "tell TERN on lars macbook …" becomes "@larss-macbook-pro/TERN …" when it names a real block.
+		const natural = !phrase.test(input) && !address.test(input)
+			? await naturalAddress(input, async () => {
+				const panes = await visiblePanes();
+				return peerAddresses(await livePeers(panes), panes, paneId);
+			}).catch(() => undefined)
+			: undefined;
+		const explicit = phrase.test(input) || !!natural;
+		const match = address.exec(natural ?? (phrase.test(input) ? input.replace(phrase, "@") : input));
 		if (!match && !explicit) return;
 		try {
 			if (!match) throw new Error("Use @NAME PROMPT or @HOST/NAME PROMPT.");
 			const [, first, second, body] = match;
-			const task = explicit ? body.replace(/^about(?:\s+|$)/i, "") : body;
+			const task = phrase.test(input) ? body.replace(/^about(?:\s+|$)/i, "") : body;
 			const separator = /^"[\s\S]*"$/.test(task) ? null : /;\s*then here:/i.exec(task);
 			const prompt = (separator ? task.slice(0, separator.index) : task).trim();
 			const text = (/^"([\s\S]*)"$/.exec(prompt)?.[1] ?? prompt).trim();

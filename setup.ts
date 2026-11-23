@@ -119,9 +119,10 @@ async function authorize(target: string): Promise<void> {
 		key = (await Bun.file(`${generated}.pub`).text()).trim();
 	}
 	console.log(`[${target}] no SSH key accepted; enter its password once to install this machine's key`);
-	// ssh reads the password from the terminal; stdin carries the key.
-	await Bun.spawn(["ssh", "-o", "StrictHostKeyChecking=accept-new", target, "umask 077; mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"],
-		{ stdin: new TextEncoder().encode(`${key}\n`), stdout: "inherit", stderr: "inherit" }).exited;
+	// Windows ssh only prompts with the console as stdin, so the public key travels in the command.
+	const code = await Bun.spawn(["ssh", "-o", "StrictHostKeyChecking=accept-new", target, `umask 077; mkdir -p ~/.ssh && echo '${key.replace(/'/g, "")}' >> ~/.ssh/authorized_keys`],
+		{ stdin: "inherit", stdout: "inherit", stderr: "inherit" }).exited;
+	if (code) console.log(`[${target}] key install failed (ssh exit ${code})`);
 }
 
 async function installRemote(target: string): Promise<Result> {

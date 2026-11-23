@@ -14,7 +14,7 @@ bun setup.ts [-i IDENTITY_FILE] [user@]host ...
 This sets up this machine and every listed host over SSH, then checks that they can all reach each other. On each host it:
 
 - installs bun and omp if they are missing;
-- copies this package to `~/.omp/tern-talk-releases/<version>` and runs `omp install` on it (the other machines need no GitHub login);
+- copies this package to `~/.omp/tern-talk-current` and runs `omp install` on it (the other machines need no GitHub login);
 - if Tern is missing, runs `tern remote setup` from this machine to install it;
 - on Windows, adds an inbound firewall rule for TCP 7470 from `100.64.0.0/10`, when the SSH user is an admin.
 
